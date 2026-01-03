@@ -11,6 +11,7 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const { width, height } = Dimensions.get("window");
+
 const GROUND_HEIGHT = 100;
 const PLAYER_X = 60;
 
@@ -18,17 +19,44 @@ export default function App() {
   const [screen, setScreen] = useState("login");
   const [username, setUsername] = useState("");
   const [difficulty, setDifficulty] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  /* ================= LOGIN (UNCHANGED) ================= */
+  useEffect(() => {
+    const loadUser = async () => {
+      const savedUser = await AsyncStorage.getItem("USERNAME");
+      if (savedUser) {
+        setUsername(savedUser);
+        setScreen("difficulty");
+      }
+      setLoading(false);
+    };
+    loadUser();
+  }, []);
+
+  const login = async () => {
+    await AsyncStorage.setItem("USERNAME", username);
+    setScreen("difficulty");
+  };
+
+  const logout = async () => {
+    await AsyncStorage.removeItem("USERNAME");
+    setUsername("");
+    setDifficulty(null);
+    setScreen("login");
+  };
+
+  if (loading) return null;
+
+  /* ================= LOGIN SCREEN ================= */
   if (screen === "login") {
     return (
       <View style={styles.loginContainer}>
         <Text style={styles.appTitle}>Stick Man Runner</Text>
 
         <TextInput
-          style={styles.input}
           placeholder="Enter Username"
           placeholderTextColor="#aaa"
+          style={styles.input}
           value={username}
           onChangeText={setUsername}
         />
@@ -39,58 +67,52 @@ export default function App() {
             { opacity: username.length < 3 ? 0.5 : 1 },
           ]}
           disabled={username.length < 3}
-          onPress={() => setScreen("difficulty")}
+          onPress={login}
         >
           <Text style={styles.loginText}>LOGIN</Text>
         </TouchableOpacity>
+
+        <Text style={styles.hint}>Username must be 3+ characters</Text>
       </View>
     );
   }
 
-  /* ================= DIFFICULTY (UNCHANGED STYLE) ================= */
+  /* ================= DIFFICULTY SCREEN ================= */
   if (screen === "difficulty") {
     return (
       <View style={styles.loginContainer}>
         <Text style={styles.appTitle}>Select Difficulty</Text>
 
-        {["Easy", "Normal", "Hard"].map((d) => (
+        {["Easy", "Normal", "Hard"].map((level) => (
           <TouchableOpacity
-            key={d}
+            key={level}
             style={styles.loginButton}
             onPress={() => {
-              setDifficulty(d);
+              setDifficulty(level);
               setScreen("game");
             }}
           >
-            <Text style={styles.loginText}>{d.toUpperCase()}</Text>
+            <Text style={styles.loginText}>{level.toUpperCase()}</Text>
           </TouchableOpacity>
         ))}
 
-        <TouchableOpacity
-          style={styles.loginButton}
-          onPress={() => setScreen("highscore")}
-        >
-          <Text style={styles.loginText}>HIGH SCORES</Text>
-        </TouchableOpacity>
+        <Text style={styles.hint}>Choose wisely 👀</Text>
       </View>
     );
   }
 
-  if (screen === "highscore") {
-    return <HighScoreScreen goBack={() => setScreen("difficulty")} />;
-  }
-
   return (
     <GameScreen
+      username={username}
       difficulty={difficulty}
-      goHighScore={() => setScreen("highscore")}
+      onLogout={logout}
     />
   );
 }
 
-/* ================= GAME ================= */
+/* ================= GAME SCREEN ================= */
 
-function GameScreen({ difficulty, goHighScore }) {
+function GameScreen({ username, difficulty, onLogout }) {
   const settings = {
     Easy: { gravity: 0.6, speed: 7 },
     Normal: { gravity: 0.85, speed: 9 },
@@ -100,33 +122,42 @@ function GameScreen({ difficulty, goHighScore }) {
   const [playerY, setPlayerY] = useState(height - GROUND_HEIGHT - 120);
   const [obstacles, setObstacles] = useState([]);
   const [score, setScore] = useState(0);
-  const [gameOver, setGameOver] = useState(false);
+  const [legToggle, setLegToggle] = useState(false);
+  const [isGameOver, setIsGameOver] = useState(false);
 
   const velocity = useRef(0);
-  const jumps = useRef(2);
+  const jumpsLeft = useRef(2);
+  const speed = useRef(settings.speed);
   const loop = useRef(null);
 
   useEffect(() => {
     loop.current = setInterval(() => {
       velocity.current += settings.gravity;
-      let y = playerY + velocity.current;
+      let newY = playerY + velocity.current;
 
-      if (y >= height - GROUND_HEIGHT - 120) {
-        y = height - GROUND_HEIGHT - 120;
+      if (newY >= height - GROUND_HEIGHT - 120) {
+        newY = height - GROUND_HEIGHT - 120;
         velocity.current = 0;
-        jumps.current = 2;
+        jumpsLeft.current = 2;
       }
 
-      setPlayerY(y);
+      setPlayerY(newY);
 
-      setObstacles((o) =>
-        o.map((x) => ({ ...x, x: x.x - settings.speed })).filter((x) => x.x > -50)
+      setObstacles((obs) =>
+        obs
+          .map((o) => ({ ...o, x: o.x - speed.current }))
+          .filter((o) => o.x > -60)
       );
 
-      if (Math.random() < 0.025)
-        setObstacles((o) => [...o, { x: width }]);
+      if (Math.random() < 0.025) {
+        setObstacles((obs) => [
+          ...obs,
+          { x: width, width: 30 + Math.random() * 20 },
+        ]);
+      }
 
       setScore((s) => s + 1);
+      setLegToggle((l) => !l);
     }, 16);
 
     return () => clearInterval(loop.current);
@@ -136,93 +167,75 @@ function GameScreen({ difficulty, goHighScore }) {
     obstacles.forEach((o) => {
       if (
         o.x < PLAYER_X + 30 &&
-        o.x + 40 > PLAYER_X &&
+        o.x + o.width > PLAYER_X &&
         playerY > height - GROUND_HEIGHT - 140
       ) {
-        setGameOver(true);
+        setIsGameOver(true);
         clearInterval(loop.current);
-        saveHighScore();
       }
     });
-  }, [obstacles]);
+  }, [obstacles, playerY]);
 
-  const saveHighScore = async () => {
-    const key = `HIGH_${difficulty}`;
-    const best = Number(await AsyncStorage.getItem(key)) || 0;
-    if (score > best) {
-      await AsyncStorage.setItem(key, score.toString());
+  const handleTouch = () => {
+    if (isGameOver) return;
+    if (jumpsLeft.current > 0) {
+      velocity.current = -15;
+      jumpsLeft.current -= 1;
     }
   };
 
-  const jump = () => {
-    if (jumps.current > 0 && !gameOver) {
-      velocity.current = -15;
-      jumps.current--;
-    }
+  const resetGame = () => {
+    setPlayerY(height - GROUND_HEIGHT - 120);
+    velocity.current = 0;
+    jumpsLeft.current = 2;
+    setObstacles([]);
+    setScore(0);
+    setIsGameOver(false);
   };
 
   return (
-    <Pressable style={styles.container} onPressIn={jump}>
+    <Pressable style={styles.container} onPressIn={handleTouch}>
+      <View style={styles.header}>
+        <Text style={styles.username}>
+          👤 {username} ({difficulty})
+        </Text>
+        <TouchableOpacity onPress={onLogout}>
+          <Text style={styles.logout}>Logout</Text>
+        </TouchableOpacity>
+      </View>
+
       <Text style={styles.score}>Score: {score}</Text>
 
-      <View style={[styles.player, { top: playerY }]} />
+      <View style={[styles.player, { top: playerY }]}>
+        <View style={styles.head} />
+        <View style={styles.body} />
+        <View
+          style={[
+            styles.legs,
+            { transform: [{ rotate: legToggle ? "20deg" : "-20deg" }] },
+          ]}
+        />
+      </View>
 
       {obstacles.map((o, i) => (
-        <View key={i} style={[styles.obstacle, { left: o.x }]} />
+        <View
+          key={i}
+          style={[styles.obstacle, { left: o.x, width: o.width }]}
+        />
       ))}
 
       <View style={styles.ground} />
 
-      {gameOver && (
-        <View style={styles.overlay}>
-          <Text style={styles.gameOver}>GAME OVER</Text>
-
-          <TouchableOpacity style={styles.loginButton} onPress={goHighScore}>
-            <Text style={styles.loginText}>HIGH SCORES</Text>
-          </TouchableOpacity>
-        </View>
+      {isGameOver && (
+        <Text style={styles.gameOver} onPress={resetGame}>
+          GAME OVER{"\n"}Tap to Restart
+        </Text>
       )}
     </Pressable>
   );
 }
 
-/* ================= HIGH SCORE SCREEN ================= */
-
-function HighScoreScreen({ goBack }) {
-  const [scores, setScores] = useState({ Easy: 0, Normal: 0, Hard: 0 });
-
-  useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem("HIGH_Easy"),
-      AsyncStorage.getItem("HIGH_Normal"),
-      AsyncStorage.getItem("HIGH_Hard"),
-    ]).then(([e, n, h]) =>
-      setScores({
-        Easy: e || 0,
-        Normal: n || 0,
-        Hard: h || 0,
-      })
-    );
-  }, []);
-
-  return (
-    <View style={styles.loginContainer}>
-      <Text style={styles.appTitle}>High Scores</Text>
-
-      {Object.entries(scores).map(([k, v]) => (
-        <Text key={k} style={styles.scoreText}>
-          {k}: {v}
-        </Text>
-      ))}
-
-      <TouchableOpacity style={styles.loginButton} onPress={goBack}>
-        <Text style={styles.loginText}>BACK</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-/* ================= STYLES (UNCHANGED) ================= */
+/* ================= STYLES ================= */
 
 const styles = StyleSheet.create({
   loginContainer: {
@@ -235,7 +248,7 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 32,
     fontWeight: "bold",
-    marginBottom: 30,
+    marginBottom: 40,
   },
   input: {
     width: "80%",
@@ -244,50 +257,82 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 15,
     color: "#fff",
+    fontSize: 16,
     marginBottom: 20,
   },
   loginButton: {
     backgroundColor: "#ff4757",
     paddingVertical: 14,
-    paddingHorizontal: 40,
+    paddingHorizontal: 50,
     borderRadius: 10,
-    marginTop: 15,
+    marginBottom: 15,
   },
   loginText: {
     color: "#fff",
     fontSize: 18,
     fontWeight: "bold",
   },
+  hint: {
+    color: "#777",
+    marginTop: 15,
+  },
   container: {
     flex: 1,
     backgroundColor: "#0b0f1a",
   },
+  header: {
+    position: "absolute",
+    top: 40,
+    width: "100%",
+    paddingHorizontal: 20,
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  username: {
+    color: "#fff",
+    fontSize: 16,
+  },
+  logout: {
+    color: "#ff6b81",
+    fontSize: 16,
+  },
   score: {
     position: "absolute",
-    top: 60,
+    top: 80,
     alignSelf: "center",
     color: "#fff",
-    fontSize: 22,
-  },
-  scoreText: {
-    color: "#fff",
     fontSize: 20,
-    marginBottom: 15,
+    fontWeight: "bold",
   },
   player: {
     position: "absolute",
     left: PLAYER_X,
-    width: 30,
-    height: 90,
+    alignItems: "center",
+  },
+  head: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     borderWidth: 2,
+    borderColor: "#fff",
+  },
+  body: {
+    width: 4,
+    height: 45,
+    backgroundColor: "#fff",
+  },
+  legs: {
+    width: 30,
+    height: 18,
+    borderBottomWidth: 2,
     borderColor: "#fff",
   },
   obstacle: {
     position: "absolute",
     bottom: GROUND_HEIGHT,
-    width: 40,
     height: 50,
     backgroundColor: "#ff4757",
+    borderRadius: 6,
   },
   ground: {
     position: "absolute",
@@ -296,15 +341,14 @@ const styles = StyleSheet.create({
     width: "100%",
     backgroundColor: "#1e272e",
   },
-  overlay: {
-    position: "absolute",
-    top: height / 3,
-    width: "100%",
-    alignItems: "center",
-  },
   gameOver: {
-    color: "#fff",
+    position: "absolute",
+    top: height / 2 - 70,
+    width: "100%",
+    textAlign: "center",
     fontSize: 28,
-    marginBottom: 20,
+    color: "#fff",
+    fontWeight: "bold",
   },
 });
+
